@@ -5,19 +5,28 @@ on:
     paths:
       - 'src/main.cpp'
       - '.github/workflows/build.yml'
+
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: android-actions/setup-android@v3
-      - name: Install Android NDK on GitHub runner (not local PC)
+      - name: Setup Android SDK (without deprecated tools package)
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ''
+      - name: Install pinned Android NDK
         run: sdkmanager --install 'ndk;27.2.12479018'
       - name: Build whitelisted Binder probe
+        shell: bash
         run: |
           set -euo pipefail
-          TOOL="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi34-clang++"
+          TOOL="${ANDROID_HOME}/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi34-clang++"
+          test -x "$TOOL" || { echo "ERROR: Android NDK compiler missing: $TOOL"; exit 1; }
           mkdir -p out
           "$TOOL" src/main.cpp -std=c++17 -O2 -fPIE -pie -fstack-protector-strong \
             -Wall -Wextra -Werror -Wl,-z,relro,-z,now \
