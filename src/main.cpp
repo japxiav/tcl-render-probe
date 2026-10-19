@@ -14,6 +14,8 @@ constexpr const char* kService = "vendor.mediatek.hardware.render.IRender/defaul
 constexpr const char* kDescriptor = "vendor.mediatek.hardware.render.IRender";
 constexpr transaction_code_t kGetLdmBlockNum = 147;
 constexpr transaction_code_t kGetDeviceId = 31;
+// BpRender::GetDimmingDutyInfo loads 0x8f in lib render-V1-ndk.so.
+constexpr transaction_code_t kGetDimmingDutyInfo = 143;
 // Exact selector compared by both MI_RENDER_GetLdmBlockNum and
 // MI_RENDER_GetLdmBlockData in libmi3_hwc_hal.so (V643):
 //   mvn r0, #0x0e000000 -> 0xf1ffffff (signed -234881025)
@@ -142,7 +144,52 @@ bool readDeviceIdReply(const AParcel* parcel) {
     return true;
 }
 
-int run(bool query, bool deviceId, bool nativeSelector) {
+
+bool readDutyReply(const AParcel* parcel) {
+    AStatus* status = nullptr;
+    if (!okay(AParcel_readStatusHeader(parcel, &status), "GetDimmingDutyInfo AIDL status")) return false;
+    if (status == nullptr) return false;
+    const bool serviceOk = AStatus_isOk(status);
+    if (!serviceOk) {
+        std::fprintf(stderr, "DUTY_SERVICE_REJECTED: exception=%d vendor_error=%d\n",
+                     AStatus_getExceptionCode(status), AStatus_getServiceSpecificError(status));
+        AStatus_delete(status);
+        return false;
+    }
+    AStatus_delete(status);
+    int32_t presence = 0, size = 0, result = 0, nested = 0, nestedSize = 0;
+    int32_t raw0 = 0, raw1 = 0, raw2 = 0;
+    if (!okay(AParcel_readInt32(parcel, &presence), "duty return nullable marker")) return false;
+    if (presence != 1) {
+        std::fprintf(stderr, "DUTY_NO_RETURN_OBJECT: marker=%d\n", presence);
+        return false;
+    }
+    if (!okay(AParcel_readInt32(parcel, &size), "duty return size")) return false;
+    if (size < 12 || size > 128) {
+        std::fprintf(stderr, "DUTY_UNEXPECTED_SIZE: %d\n", size);
+        return false;
+    }
+    if (!okay(AParcel_readInt32(parcel, &result), "duty result code")) return false;
+    if (!okay(AParcel_readInt32(parcel, &nested), "duty nested marker")) return false;
+    std::printf("duty_result_code=%d nested_present=%d\n", result, nested);
+    if (result != 0 || nested != 1) {
+        std::puts("DUTY_QUERY_NOT_SUCCESSFUL; no values interpreted.");
+        return false;
+    }
+    if (!okay(AParcel_readInt32(parcel, &nestedSize), "duty struct size")) return false;
+    if (nestedSize < 16 || nestedSize > 64) {
+        std::fprintf(stderr, "DUTY_UNEXPECTED_NESTED_SIZE: %d\n", nestedSize);
+        return false;
+    }
+    if (!okay(AParcel_readInt32(parcel, &raw0), "duty raw0")) return false;
+    if (!okay(AParcel_readInt32(parcel, &raw1), "duty raw1")) return false;
+    if (!okay(AParcel_readInt32(parcel, &raw2), "duty raw2")) return false;
+    std::printf("duty_fields_raw=%d,%d,%d (semantics unknown)\n", raw0, raw1, raw2);
+    std::puts("DUTY_READ_COMPLETED: raw fields only; not a 180-zone brightness map.");
+    return true;
+}
+
+int run(bool query, bool deviceId, bool nativeSelector, bool dutyInfo) {
     // ServiceManager symbol is part of Android's platform Binder ABI; it is
     // intentionally absent from the public NDK linker stubs.
     // Resolve at runtime instead of adding private SDK or copied libraries.
@@ -176,13 +223,23 @@ int run(bool query, bool deviceId, bool nativeSelector) {
         return 4;
     }
     std::puts("RENDER_SERVICE_PING_OK");
-    if (!query && !deviceId) { AIBinder_decStrong(binder); return 0; }
+    if (!query && !deviceId && !dutyInfo) { AIBinder_decStrong(binder); return 0; }
 
     const int32_t selector = nativeSelector ? kNativeLdmSelector : 0;
     AParcel* in = nullptr;
     AParcel* out = nullptr;
     int rc = 5;
     if (!okay(AIBinder_prepareTransaction(binder, &in), "prepare")) goto finish;
+    if (dutyInfo) {
+        // The manufacturer client sends a single int32 for read-only
+        // GetDimmingDutyInfo(143). The V643 HAL compares it to the same
+        // special selector previously validated by GetLdmBlockNum.
+        if (!okay(AParcel_writeInt32(in, kNativeLdmSelector), "duty device selector")) goto finish;
+        if (!okay(AIBinder_transact(binder, kGetDimmingDutyInfo, &in, &out, 0x10000000u),
+                  "GetDimmingDutyInfo (143)")) goto finish;
+        if (out != nullptr && readDutyReply(out)) rc = 0;
+        goto finish;
+    }
     if (deviceId) {
         // GetDeviceId is transaction 31 in the original MediaTek BpRender.
         // Query uses a single 32-bit input; it does not change display state.
@@ -221,14 +278,15 @@ finish:
 
 int main(int argc, char** argv) {
     if (argc != 2) {
-        std::puts("TCL Render Probe v0.3\nUsage: tcl_render_probe --ping | --read-device-id | --read-block-num | --read-block-num-native\n"
-                  "Read-only Binder queries 31 and 147 only; native selector is experimental.");
+        std::puts("TCL Render Probe v0.4\nUsage: tcl_render_probe --ping | --read-device-id | --read-block-num | --read-block-num-native | --read-duty\n"
+                  "Read-only Binder queries 31, 143 and 147; no Set* operations or direct DRM calls.");
         return argc == 1 ? 0 : 1;
     }
-    if (std::strcmp(argv[1], "--ping") == 0) return run(false, false, false);
-    if (std::strcmp(argv[1], "--read-device-id") == 0) return run(false, true, false);
-    if (std::strcmp(argv[1], "--read-block-num") == 0) return run(true, false, false);
-    if (std::strcmp(argv[1], "--read-block-num-native") == 0) return run(true, false, true);
-    std::fputs("Invalid mode. Use --ping, --read-device-id, --read-block-num, or --read-block-num-native.\n", stderr);
+    if (std::strcmp(argv[1], "--ping") == 0) return run(false, false, false, false);
+    if (std::strcmp(argv[1], "--read-device-id") == 0) return run(false, true, false, false);
+    if (std::strcmp(argv[1], "--read-block-num") == 0) return run(true, false, false, false);
+    if (std::strcmp(argv[1], "--read-block-num-native") == 0) return run(true, false, true, false);
+    if (std::strcmp(argv[1], "--read-duty") == 0) return run(false, false, false, true);
+    std::fputs("Invalid mode. Use --ping, --read-device-id, --read-block-num, --read-block-num-native or --read-duty.\n", stderr);
     return 1;
 }
