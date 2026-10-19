@@ -7,11 +7,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-
-// AServiceManager_checkService is a stable Android API (since API 29),
-// but binder_manager.h is a platform-only header not shipped in this NDK sysroot.
-// Declare precisely the C ABI from AOSP; link via libbinder_ndk.
-extern "C" AIBinder* AServiceManager_checkService(const char* instance);
+#include <dlfcn.h>
 
 namespace {
 constexpr const char* kService = "vendor.mediatek.hardware.render.IRender/default";
@@ -93,7 +89,24 @@ bool readBlockNumReply(const AParcel* parcel) {
 }
 
 int run(bool query) {
-    AIBinder* binder = AServiceManager_checkService(kService);
+    // ServiceManager symbol is part of Android's platform Binder ABI; it is
+    // intentionally absent from the public NDK linker stubs.
+    // Resolve at runtime instead of adding private SDK or copied libraries.
+    void* libbinder = dlopen("libbinder_ndk.so", RTLD_NOW | RTLD_LOCAL);
+    if (!libbinder) {
+        std::fprintf(stderr, "BINDER_LIBRARY_UNAVAILABLE: %s\n", dlerror());
+        return 2;
+    }
+    using CheckService = AIBinder* (*)(const char*);
+    dlerror();
+    void* symbol = dlsym(libbinder, "AServiceManager_checkService");
+    if (!symbol) {
+        std::fprintf(stderr, "SERVICE_MANAGER_SYMBOL_UNAVAILABLE: %s\n", dlerror());
+        dlclose(libbinder);
+        return 2;
+    }
+    const auto checkService = reinterpret_cast<CheckService>(symbol);
+    AIBinder* binder = checkService(kService);
     if (binder == nullptr) {
         std::fprintf(stderr, "SERVICE_UNAVAILABLE: %s (could be SELinux or registration)\n", kService);
         return 2;
