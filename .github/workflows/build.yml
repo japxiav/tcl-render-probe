@@ -30,7 +30,7 @@ jobs:
           mkdir -p out
           "$TOOL" src/main.cpp -std=c++17 -O2 -fPIE -pie -fstack-protector-strong \
             -Wall -Wextra -Werror -Wl,-z,relro,-z,now \
-            -lbinder_ndk -o out/tcl_render_probe
+            -lbinder_ndk -ldl -o out/tcl_render_probe
           file out/tcl_render_probe
           sha256sum out/tcl_render_probe | tee out/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
