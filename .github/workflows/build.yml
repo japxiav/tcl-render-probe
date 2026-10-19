@@ -1,1 +1,31 @@
-
+name: Build TCL Render Probe (ARM32)
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'src/main.cpp'
+      - '.github/workflows/build.yml'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: android-actions/setup-android@v3
+      - name: Install Android NDK on GitHub runner (not local PC)
+        run: sdkmanager --install 'ndk;27.2.12479018'
+      - name: Build whitelisted Binder probe
+        run: |
+          set -euo pipefail
+          TOOL="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi34-clang++"
+          mkdir -p out
+          "$TOOL" src/main.cpp -std=c++17 -O2 -fPIE -pie -fstack-protector-strong \
+            -Wall -Wextra -Werror -Wl,-z,relro,-z,now \
+            -lbinder_ndk -o out/tcl_render_probe
+          file out/tcl_render_probe
+          sha256sum out/tcl_render_probe | tee out/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TCL-Render-Probe-ARM32
+          path: out/
+          if-no-files-found: error
