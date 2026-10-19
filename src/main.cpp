@@ -131,6 +131,10 @@ int run(bool query) {
     // The first int32 and block_type=0 below are conservative test values,
     // not a manufacturer-confirmed semantic mapping. Only READ transaction 147.
     if (!okay(AParcel_writeInt32(in, 0), "integer selector")) goto finish;
+    // The generated MediaTek BpRender::GetLdmBlockNum writes a non-null
+    // parcelable presence marker (int32 1) before the ST_LDM_BLOCK_NUM_INFO
+    // bytes. Omitting it causes the service to reject the request parcel.
+    if (!okay(AParcel_writeInt32(in, 1), "parcelable presence marker")) goto finish;
     if (!writeBlockNumRequest(in)) goto finish;
     // Flag observed in BpRender::GetLdmBlockNum. This is NOT oneway.
     if (!okay(AIBinder_transact(binder, kGetLdmBlockNum, &in, &out, 0x10000000u),
