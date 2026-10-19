@@ -13,6 +13,7 @@ namespace {
 constexpr const char* kService = "vendor.mediatek.hardware.render.IRender/default";
 constexpr const char* kDescriptor = "vendor.mediatek.hardware.render.IRender";
 constexpr transaction_code_t kGetLdmBlockNum = 147;
+constexpr transaction_code_t kGetDeviceId = 31;
 
 void* onCreate(void*) { return nullptr; }
 void onDestroy(void*) {}
@@ -97,7 +98,46 @@ bool readBlockNumReply(const AParcel* parcel) {
     return true;
 }
 
-int run(bool query) {
+// MediaTek RetGetDeviceId::writeToParcel serializes exactly two int32 fields
+// inside one nullable-sized parcelable: [return_present=1, size=12,
+// return_code:int32, device_id:int32]. Device identifier is shown but NEVER
+// reused automatically for hardware operations.
+bool readDeviceIdReply(const AParcel* parcel) {
+    AStatus* status = nullptr;
+    if (!okay(AParcel_readStatusHeader(parcel, &status), "GetDeviceId AIDL status")) return false;
+    if (status == nullptr) return false;
+    const bool service_ok = AStatus_isOk(status);
+    if (!service_ok) {
+        std::fprintf(stderr, "DEVICE_ID_SERVICE_REJECTED: exception=%d service_error=%d\n",
+                     AStatus_getExceptionCode(status), AStatus_getServiceSpecificError(status));
+        AStatus_delete(status);
+        return false;
+    }
+    AStatus_delete(status);
+    int32_t present = 0, size = 0, result = 0, device_id = 0;
+    if (!okay(AParcel_readInt32(parcel, &present), "GetDeviceId nullable marker")) return false;
+    if (present != 1) {
+        std::fprintf(stderr, "DEVICE_ID_REPLY_MISSING: present=%d\n", present);
+        return false;
+    }
+    if (!okay(AParcel_readInt32(parcel, &size), "GetDeviceId parcelable size")) return false;
+    if (size != 12) {
+        std::fprintf(stderr, "DEVICE_ID_UNEXPECTED_REPLY_SIZE: %d\n", size);
+        return false;
+    }
+    if (!okay(AParcel_readInt32(parcel, &result), "GetDeviceId result")) return false;
+    if (!okay(AParcel_readInt32(parcel, &device_id), "GetDeviceId value")) return false;
+    std::printf("device_result_code=%d device_id_signed=%d device_id_hex=0x%08x\n",
+                result, device_id, static_cast<uint32_t>(device_id));
+    if (result != 0) {
+        std::puts("DEVICE_ID_QUERY_UNSUCCESSFUL (nonzero vendor result; do not reuse ID).");
+        return false;
+    }
+    std::puts("DEVICE_ID_QUERY_COMPLETED (identifier not validated for LDM operations).");
+    return true;
+}
+
+int run(bool query, bool deviceId) {
     // ServiceManager symbol is part of Android's platform Binder ABI; it is
     // intentionally absent from the public NDK linker stubs.
     // Resolve at runtime instead of adding private SDK or copied libraries.
@@ -131,12 +171,21 @@ int run(bool query) {
         return 4;
     }
     std::puts("RENDER_SERVICE_PING_OK");
-    if (!query) { AIBinder_decStrong(binder); return 0; }
+    if (!query && !deviceId) { AIBinder_decStrong(binder); return 0; }
 
     AParcel* in = nullptr;
     AParcel* out = nullptr;
     int rc = 5;
     if (!okay(AIBinder_prepareTransaction(binder, &in), "prepare")) goto finish;
+    if (deviceId) {
+        // GetDeviceId is transaction 31 in the original MediaTek BpRender.
+        // Query uses a single 32-bit input; it does not change display state.
+        if (!okay(AParcel_writeInt32(in, 0), "GetDeviceId selector")) goto finish;
+        if (!okay(AIBinder_transact(binder, kGetDeviceId, &in, &out, 0x10000000u),
+                  "GetDeviceId (31)")) goto finish;
+        if (out != nullptr && readDeviceIdReply(out)) rc = 0;
+        goto finish;
+    }
     // The first int32 and block_type=0 below are conservative test values,
     // not a manufacturer-confirmed semantic mapping. Only READ transaction 147.
     if (!okay(AParcel_writeInt32(in, 0), "integer selector")) goto finish;
@@ -160,12 +209,13 @@ finish:
 
 int main(int argc, char** argv) {
     if (argc != 2) {
-        std::puts("TCL Render Probe v0.1\nUsage: tcl_render_probe --ping | --read-block-num\n"
-                  "Only transaction 147 (GetLdmBlockNum) can be requested; no writes/root/firmware changes.");
+        std::puts("TCL Render Probe v0.2\nUsage: tcl_render_probe --ping | --read-device-id | --read-block-num\n"
+                  "Read-only Binder queries 31 and 147 only; no writes/root/firmware changes.");
         return argc == 1 ? 0 : 1;
     }
-    if (std::strcmp(argv[1], "--ping") == 0) return run(false);
-    if (std::strcmp(argv[1], "--read-block-num") == 0) return run(true);
-    std::fputs("Invalid mode. Only --ping or --read-block-num is allowed.\n", stderr);
+    if (std::strcmp(argv[1], "--ping") == 0) return run(false, false);
+    if (std::strcmp(argv[1], "--read-device-id") == 0) return run(false, true);
+    if (std::strcmp(argv[1], "--read-block-num") == 0) return run(true, false);
+    std::fputs("Invalid mode. Only --ping, --read-device-id or --read-block-num is allowed.\n", stderr);
     return 1;
 }
