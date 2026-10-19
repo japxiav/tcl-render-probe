@@ -58,6 +58,15 @@ bool readBlockNumReply(const AParcel* parcel) {
         return false;
     }
     AStatus_delete(status);
+    // Generated BpRender::GetLdmBlockNum first reads a nullable-return
+    // parcelable presence marker, then RetGetLdmBlockNum::readFromParcel.
+    // A successful response here began with 1; that is not a parcelable size.
+    int32_t outer_present = 0;
+    if (!okay(AParcel_readInt32(parcel, &outer_present), "return presence marker")) return false;
+    if (outer_present != 1) {
+        std::fprintf(stderr, "UNEXPECTED_RETURN_PRESENCE: %d\n", outer_present);
+        return false;
+    }
     int32_t length = 0, result = 0, present = 0, nested_length = 0, type = 0;
     char16_t width = 0, height = 0;
     if (!okay(AParcel_readInt32(parcel, &length), "result size")) return false;
