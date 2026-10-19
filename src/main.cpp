@@ -2,12 +2,16 @@
 // Target: TCL C6K / MediaTek V643, Android 14. No privileged operations.
 // Mode --ping: Binder ping only. Mode --read-block-num: AIDL transaction 147 only.
 #include <android/binder_ibinder.h>
-#include <android/binder_manager.h>
 #include <android/binder_parcel.h>
 #include <android/binder_status.h>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+
+// AServiceManager_checkService is a stable Android API (since API 29),
+// but binder_manager.h is a platform-only header not shipped in this NDK sysroot.
+// Declare precisely the C ABI from AOSP; link via libbinder_ndk.
+extern "C" AIBinder* AServiceManager_checkService(const char* instance);
 
 namespace {
 constexpr const char* kService = "vendor.mediatek.hardware.render.IRender/default";
