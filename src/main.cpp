@@ -16,6 +16,8 @@ constexpr transaction_code_t kGetLdmBlockNum = 147;
 constexpr transaction_code_t kGetDeviceId = 31;
 // BpRender::GetDimmingDutyInfo loads 0x8f in lib render-V1-ndk.so.
 constexpr transaction_code_t kGetDimmingDutyInfo = 143;
+// BpRender::GetDvPwmInfo transaction code 0xa2, V643 AIDL NDK.
+constexpr transaction_code_t kGetDvPwmInfo = 162;
 // Exact selector compared by both MI_RENDER_GetLdmBlockNum and
 // MI_RENDER_GetLdmBlockData in libmi3_hwc_hal.so (V643):
 //   mvn r0, #0x0e000000 -> 0xf1ffffff (signed -234881025)
@@ -189,7 +191,61 @@ bool readDutyReply(const AParcel* parcel) {
     return true;
 }
 
-int run(bool query, bool deviceId, bool nativeSelector, bool dutyInfo) {
+// GetDvPwmInfo(162) response verified from RetGetDvPwmInfo::writeToParcel
+// and ST_DV_PWM_INFO::writeToParcel in the hash-pinned V643 NDK ELF:
+// status, nullable-return marker, outer Parcelable size, result code,
+// nested Parcelable marker, nested size, two signed 8-bit fields.
+// The fields are raw bytes, NOT percentages or 180-zone values.
+bool readDvPwmReply(const AParcel* parcel) {
+    AStatus* status = nullptr;
+    if (!okay(AParcel_readStatusHeader(parcel, &status), "GetDvPwmInfo AIDL status")) return false;
+    if (status == nullptr) return false;
+    const bool serviceOk = AStatus_isOk(status);
+    if (!serviceOk) {
+        std::fprintf(stderr, "DV_PWM_SERVICE_REJECTED: exception=%d vendor_error=%d\n",
+                     AStatus_getExceptionCode(status), AStatus_getServiceSpecificError(status));
+        AStatus_delete(status);
+        return false;
+    }
+    AStatus_delete(status);
+    int32_t outerPresent = 0, outerSize = 0, result = 0, nestedPresent = 0, nestedSize = 0;
+    int8_t raw0 = 0, raw1 = 0;
+    if (!okay(AParcel_readInt32(parcel, &outerPresent), "dv-pwm return marker")) return false;
+    if (outerPresent != 1) {
+        std::fprintf(stderr, "DV_PWM_MISSING_RETURN: %d\n", outerPresent);
+        return false;
+    }
+    if (!okay(AParcel_readInt32(parcel, &outerSize), "dv-pwm outer size")) return false;
+    if (outerSize < 12 || outerSize > 64) {
+        std::fprintf(stderr, "DV_PWM_UNEXPECTED_OUTER_SIZE: %d\n", outerSize);
+        return false;
+    }
+    if (!okay(AParcel_readInt32(parcel, &result), "dv-pwm vendor result")) return false;
+    if (!okay(AParcel_readInt32(parcel, &nestedPresent), "dv-pwm nested marker")) return false;
+    std::printf("dv_pwm_result_code=%d nested_present=%d\n", result, nestedPresent);
+    if (result != 0 || nestedPresent != 1) {
+        std::puts("DV_PWM_NO_VALID_DATA (nothing interpreted).");
+        return false;
+    }
+    if (!okay(AParcel_readInt32(parcel, &nestedSize), "dv-pwm nested size")) return false;
+    // Parcelable header 4 bytes + two AParcel_writeByte fields.
+    if (nestedSize < 6 || nestedSize > 32) {
+        std::fprintf(stderr, "DV_PWM_UNEXPECTED_NESTED_SIZE: %d\n", nestedSize);
+        return false;
+    }
+    if (!okay(AParcel_readByte(parcel, &raw0), "dv-pwm byte0")) return false;
+    if (!okay(AParcel_readByte(parcel, &raw1), "dv-pwm byte1")) return false;
+    const uint8_t unsigned0 = static_cast<uint8_t>(raw0);
+    const uint8_t unsigned1 = static_cast<uint8_t>(raw1);
+    std::printf("dv_pwm_raw_bytes=%u,%u  combined_be=%u combined_le=%u\n",
+                static_cast<unsigned>(unsigned0), static_cast<unsigned>(unsigned1),
+                (static_cast<unsigned>(unsigned0) << 8) | unsigned1,
+                (static_cast<unsigned>(unsigned1) << 8) | unsigned0);
+    std::puts("DV_PWM_READ_COMPLETED: raw diagnostic only; format/units unverified.");
+    return true;
+}
+
+int run(bool query, bool deviceId, bool nativeSelector, bool dutyInfo, bool dvPwmInfo) {
     // ServiceManager symbol is part of Android's platform Binder ABI; it is
     // intentionally absent from the public NDK linker stubs.
     // Resolve at runtime instead of adding private SDK or copied libraries.
@@ -223,13 +279,23 @@ int run(bool query, bool deviceId, bool nativeSelector, bool dutyInfo) {
         return 4;
     }
     std::puts("RENDER_SERVICE_PING_OK");
-    if (!query && !deviceId && !dutyInfo) { AIBinder_decStrong(binder); return 0; }
+    if (!query && !deviceId && !dutyInfo && !dvPwmInfo) { AIBinder_decStrong(binder); return 0; }
 
     const int32_t selector = nativeSelector ? kNativeLdmSelector : 0;
     AParcel* in = nullptr;
     AParcel* out = nullptr;
     int rc = 5;
     if (!okay(AIBinder_prepareTransaction(binder, &in), "prepare")) goto finish;
+    if (dvPwmInfo) {
+        // GetDvPwmInfo(int, RetGetDvPwmInfo*) is a read-only AIDL getter.
+        // The V643 native HAL compares against the same 0xF1FFFFFF
+        // selector accepted by GetLdmBlockNum. No large request buffer.
+        if (!okay(AParcel_writeInt32(in, kNativeLdmSelector), "dv-pwm device selector")) goto finish;
+        if (!okay(AIBinder_transact(binder, kGetDvPwmInfo, &in, &out, 0x10000000u),
+                  "GetDvPwmInfo (162)")) goto finish;
+        if (out != nullptr && readDvPwmReply(out)) rc = 0;
+        goto finish;
+    }
     if (dutyInfo) {
         // The manufacturer client sends a single int32 for read-only
         // GetDimmingDutyInfo(143). The V643 HAL compares it to the same
@@ -278,15 +344,16 @@ finish:
 
 int main(int argc, char** argv) {
     if (argc != 2) {
-        std::puts("TCL Render Probe v0.4\nUsage: tcl_render_probe --ping | --read-device-id | --read-block-num | --read-block-num-native | --read-duty\n"
-                  "Read-only Binder queries 31, 143 and 147; no Set* operations or direct DRM calls.");
+        std::puts("TCL Render Probe v0.5\nUsage: tcl_render_probe --ping | --read-device-id | --read-block-num | --read-block-num-native | --read-duty | --read-dv-pwm\n"
+                  "Read-only Binder queries 31, 143, 147 and 162; no Set* operations or direct DRM calls.");
         return argc == 1 ? 0 : 1;
     }
-    if (std::strcmp(argv[1], "--ping") == 0) return run(false, false, false, false);
-    if (std::strcmp(argv[1], "--read-device-id") == 0) return run(false, true, false, false);
-    if (std::strcmp(argv[1], "--read-block-num") == 0) return run(true, false, false, false);
-    if (std::strcmp(argv[1], "--read-block-num-native") == 0) return run(true, false, true, false);
-    if (std::strcmp(argv[1], "--read-duty") == 0) return run(false, false, false, true);
-    std::fputs("Invalid mode. Use --ping, --read-device-id, --read-block-num, --read-block-num-native or --read-duty.\n", stderr);
+    if (std::strcmp(argv[1], "--ping") == 0) return run(false, false, false, false, false);
+    if (std::strcmp(argv[1], "--read-device-id") == 0) return run(false, true, false, false, false);
+    if (std::strcmp(argv[1], "--read-block-num") == 0) return run(true, false, false, false, false);
+    if (std::strcmp(argv[1], "--read-block-num-native") == 0) return run(true, false, true, false, false);
+    if (std::strcmp(argv[1], "--read-duty") == 0) return run(false, false, false, true, false);
+    if (std::strcmp(argv[1], "--read-dv-pwm") == 0) return run(false, false, false, false, true);
+    std::fputs("Invalid mode. Use --ping, --read-device-id, --read-block-num, --read-block-num-native, --read-duty or --read-dv-pwm.\n", stderr);
     return 1;
 }
