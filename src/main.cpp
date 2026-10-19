@@ -178,6 +178,7 @@ int run(bool query, bool deviceId, bool nativeSelector) {
     std::puts("RENDER_SERVICE_PING_OK");
     if (!query && !deviceId) { AIBinder_decStrong(binder); return 0; }
 
+    const int32_t selector = nativeSelector ? kNativeLdmSelector : 0;
     AParcel* in = nullptr;
     AParcel* out = nullptr;
     int rc = 5;
@@ -195,7 +196,6 @@ int run(bool query, bool deviceId, bool nativeSelector) {
     // --read-block-num retains the previously tested selector 0.
     // --read-block-num-native uses a literal verified at two function entry
     // points in libmi3_hwc_hal.so, but its *meaning* is not documented.
-    const int32_t selector = nativeSelector ? kNativeLdmSelector : 0;
     if (nativeSelector) {
         std::printf("EXPERIMENTAL_NATIVE_SELECTOR: signed=%d hex=0x%08x\n",
                     selector, static_cast<uint32_t>(selector));
