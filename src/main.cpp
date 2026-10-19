@@ -14,6 +14,11 @@ constexpr const char* kService = "vendor.mediatek.hardware.render.IRender/defaul
 constexpr const char* kDescriptor = "vendor.mediatek.hardware.render.IRender";
 constexpr transaction_code_t kGetLdmBlockNum = 147;
 constexpr transaction_code_t kGetDeviceId = 31;
+// Exact selector compared by both MI_RENDER_GetLdmBlockNum and
+// MI_RENDER_GetLdmBlockData in libmi3_hwc_hal.so (V643):
+//   mvn r0, #0x0e000000 -> 0xf1ffffff (signed -234881025)
+// Its semantic name remains unidentified. It is NOT GetDeviceId's response.
+constexpr int32_t kNativeLdmSelector = -234881025;
 
 void* onCreate(void*) { return nullptr; }
 void onDestroy(void*) {}
@@ -137,7 +142,7 @@ bool readDeviceIdReply(const AParcel* parcel) {
     return true;
 }
 
-int run(bool query, bool deviceId) {
+int run(bool query, bool deviceId, bool nativeSelector) {
     // ServiceManager symbol is part of Android's platform Binder ABI; it is
     // intentionally absent from the public NDK linker stubs.
     // Resolve at runtime instead of adding private SDK or copied libraries.
@@ -186,9 +191,16 @@ int run(bool query, bool deviceId) {
         if (out != nullptr && readDeviceIdReply(out)) rc = 0;
         goto finish;
     }
-    // The first int32 and block_type=0 below are conservative test values,
-    // not a manufacturer-confirmed semantic mapping. Only READ transaction 147.
-    if (!okay(AParcel_writeInt32(in, 0), "integer selector")) goto finish;
+    // Both modes invoke only GetLdmBlockNum (read transaction 147).
+    // --read-block-num retains the previously tested selector 0.
+    // --read-block-num-native uses a literal verified at two function entry
+    // points in libmi3_hwc_hal.so, but its *meaning* is not documented.
+    const int32_t selector = nativeSelector ? kNativeLdmSelector : 0;
+    if (nativeSelector) {
+        std::printf("EXPERIMENTAL_NATIVE_SELECTOR: signed=%d hex=0x%08x\n",
+                    selector, static_cast<uint32_t>(selector));
+    }
+    if (!okay(AParcel_writeInt32(in, selector), "integer selector")) goto finish;
     // The generated MediaTek BpRender::GetLdmBlockNum writes a non-null
     // parcelable presence marker (int32 1) before the ST_LDM_BLOCK_NUM_INFO
     // bytes. Omitting it causes the service to reject the request parcel.
@@ -209,13 +221,14 @@ finish:
 
 int main(int argc, char** argv) {
     if (argc != 2) {
-        std::puts("TCL Render Probe v0.2\nUsage: tcl_render_probe --ping | --read-device-id | --read-block-num\n"
-                  "Read-only Binder queries 31 and 147 only; no writes/root/firmware changes.");
+        std::puts("TCL Render Probe v0.3\nUsage: tcl_render_probe --ping | --read-device-id | --read-block-num | --read-block-num-native\n"
+                  "Read-only Binder queries 31 and 147 only; native selector is experimental.");
         return argc == 1 ? 0 : 1;
     }
-    if (std::strcmp(argv[1], "--ping") == 0) return run(false, false);
-    if (std::strcmp(argv[1], "--read-device-id") == 0) return run(false, true);
-    if (std::strcmp(argv[1], "--read-block-num") == 0) return run(true, false);
-    std::fputs("Invalid mode. Only --ping, --read-device-id or --read-block-num is allowed.\n", stderr);
+    if (std::strcmp(argv[1], "--ping") == 0) return run(false, false, false);
+    if (std::strcmp(argv[1], "--read-device-id") == 0) return run(false, true, false);
+    if (std::strcmp(argv[1], "--read-block-num") == 0) return run(true, false, false);
+    if (std::strcmp(argv[1], "--read-block-num-native") == 0) return run(true, false, true);
+    std::fputs("Invalid mode. Use --ping, --read-device-id, --read-block-num, or --read-block-num-native.\n", stderr);
     return 1;
 }
