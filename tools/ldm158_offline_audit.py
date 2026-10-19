@@ -31,7 +31,7 @@ CHECKS = {
         0x785ec: ("blx", "0xbd0cc"),
     },
 }
-INSTRUCTION = re.compile(r"^\\s*([0-9a-f]+):\\s+(?:[0-9a-f]{4}(?:\\s+[0-9a-f]{4})?|[0-9a-f]{8})\\s+([\\w.]+)\\s*(.*)$")
+INSTRUCTION = re.compile(r"^\s*([0-9a-f]+):\s+(?:[0-9a-f]{4}(?:\s+[0-9a-f]{4})?|[0-9a-f]{8})\s+([\w.]+)\s*(.*)$")
 
 def digest(file):
     h = hashlib.sha256()
