@@ -1,0 +1,49 @@
+TCL RENDER PROBE v0.1 — Android 14 / TCL C6K V643
+
+OBJETIVO
+  Primeiro acessar o serviço Render da MediaTek por NDK Binder sem root.
+  Modo --ping faz apenas o teste padrão de serviço AIBinder_ping.
+  Modo --read-block-num invoca somente a transação 147 GetLdmBlockNum.
+  NÃO possui nenhuma função de escrita, root, flashing ou ioctl direto.
+
+STATUS DE VALIDAÇÃO
+  Códigos Binder, estrutura de entrada e formato de saída analisados
+  estaticamente em bibliotecas extraídas da TV; não foi testado no Android real.
+  Campos inteiros de entrada 0 e 0 são hipóteses conservadoras, não confirmação
+  do fabricante. Permissões podem negar a chamada ou serviço pode falhar.
+  O código não usa a transação 158 (dados de zonas) porque ela não está validada.
+  A primeira execução deve ser SOMENTE --ping.
+
+COMPILACAO SEM GASTAR ESPACO NO SSD
+  1) Crie um repositorio PRIVADO e vazio no GitHub.
+  2) Envie src/main.cpp e .github/workflows/build.yml mantendo os caminhos.
+  3) GitHub > Actions > Build TCL Render Probe (ARM32) > Run workflow.
+  4) Aguarde o job. Se falhar, NÃO execute nada na TV; compartilhe log.
+  5) Em Artifacts, baixe TCL-Render-Probe-ARM32.zip (somente o executavel).
+
+PASSO 1 — SEM MODIFICAR A TV (apenas ping)
+  No Windows, CMD aberto na pasta com tcl_render_probe e adb no PATH:
+     adb devices
+     adb push tcl_render_probe /data/local/tmp/tcl_render_probe
+     adb shell chmod 700 /data/local/tmp/tcl_render_probe
+     adb shell /data/local/tmp/tcl_render_probe --ping
+  Se aparecer RENDER_SERVICE_PING_OK, o cliente conectou e respondeu ao ping.
+  Se aparecer erro SELinux/Permission denied, PARE e registre.
+
+PASSO 2 — SOMENTE DEPOIS DE CONFERIR O PING E REVISAR O RESULTADO
+  Ainda NÃO executar sem revisao adicional:
+     adb shell /data/local/tmp/tcl_render_probe --read-block-num
+  Esse modo chama transacao 147 de leitura, mas parametros zero ainda carecem
+  de validacao semantica. No primeiro contato queremos apenas o ping.
+
+LIMPEZA OPCIONAL
+     adb shell rm /data/local/tmp/tcl_render_probe
+  Apenas remove o nosso binario de teste. Nao mexe em arquivos TCL.
+
+RESPONSABILIDADES TECNICAS
+  - Executavel somente leitura no nivel de API; nao se pode garantir a
+    ausencia de erros em firmware proprietario ao receber a consulta.
+  - Nao muda frequencia do painel nem brilho e nao permite controlar zonas.
+  - O Android pode impedir que uid shell use a interface vendor AIDL.
+  - O GitHub Actions compila na nuvem; nao necessita NDK instalado no Windows.
+  - Bibliotecas/protocolos sao proprietarios. Nao publique firmware da TCL.
